@@ -204,7 +204,7 @@ type ConfigManager interface {
 	Register(id ServiceAliasConfigKey, backend *ServiceAliasConfig, route *routev1.Route)
 
 	// RemoveRoute removes a route.
-	RemoveRoute(id ServiceAliasConfigKey, route *routev1.Route) error
+	RemoveRoute(id ServiceAliasConfigKey, route *routev1.Route, endpoints []Endpoint) error
 
 	// ReplaceRouteEndpoints replaces a subset (the ones associated with
 	// a single service unit) of a route endpoints.

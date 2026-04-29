@@ -850,7 +850,15 @@ func (r *templateRouter) dynamicallyRemoveRoute(backendKey ServiceAliasConfigKey
 
 	log.V(4).Info("dynamically removing route backend", "backendKey", backendKey)
 
-	if err := r.dynamicConfigManager.RemoveRoute(backendKey, route); err != nil {
+	var endpoints []Endpoint
+	backend := r.state[backendKey]
+	for serviceKey := range backend.ServiceUnits {
+		if service, ok := r.findMatchingServiceUnit(serviceKey); ok {
+			endpoints = append(endpoints, service.EndpointTable...)
+		}
+	}
+
+	if err := r.dynamicConfigManager.RemoveRoute(backendKey, route, endpoints); err != nil {
 		log.Info("router will reload as the ConfigManager could not dynamically remove route backend", "backendKey", backendKey, "error", err)
 		return false
 	}

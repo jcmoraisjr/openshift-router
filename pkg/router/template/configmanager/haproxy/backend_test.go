@@ -433,7 +433,7 @@ func TestBackendDynamicUpdate(t *testing.T) {
 			isPassthrough := test.tlsTermination == routev1.TLSTerminationPassthrough
 			client := &fakeClient{cmdCustomResp: test.cmdCustomResp}
 
-			b := newBackend(backendName, client)
+			b := newBackendClient(client, backendName)
 
 			var removed bool
 			var addedFromUpdate bool
@@ -488,4 +488,13 @@ func (c *fakeClient) Execute(cmd string) ([]byte, error) {
 	response += "\n"
 
 	return []byte(response), nil
+}
+
+//
+// maps compatibility, remove along with https://redhat.atlassian.net/browse/NE-2644
+
+func (c *fakeClient) Maps() ([]*HAProxyMap, error) {
+	return nil, nil
+}
+func (c *fakeClient) Reset() {
 }

@@ -1,14 +1,21 @@
 package templaterouter
 
+import (
+	"time"
+
+	"github.com/openshift/router/pkg/router/template/limiter"
+)
+
 // NewFakeTemplateRouter provides an empty template router with a simple certificate manager
 // backed by a fake cert writer for testing
 func NewFakeTemplateRouter() *templateRouter {
 	fakeCertManager, _ := newSimpleCertificateManager(newFakeCertificateManagerConfig(), &fakeCertWriter{})
+	fakeRateLimiter := limiter.NewCoalescingSerializingRateLimiter(time.Minute, func() error { return nil })
 	return &templateRouter{
 		state:                     map[ServiceAliasConfigKey]ServiceAliasConfig{},
 		serviceUnits:              make(map[ServiceUnitKey]ServiceUnit),
 		certManager:               fakeCertManager,
-		rateLimitedCommitFunction: nil,
+		rateLimitedCommitFunction: fakeRateLimiter,
 	}
 }
 

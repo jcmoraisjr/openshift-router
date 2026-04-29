@@ -93,7 +93,7 @@ type haproxyConfigManager struct {
 	defaultDestinationCA string
 
 	// client is the client used to dynamically manage haproxy.
-	client *Client
+	client HAProxyClient
 
 	// reloadInProgress indicates if a router reload is in progress.
 	reloadInProgress bool
@@ -164,7 +164,7 @@ func (cm *haproxyConfigManager) Register(id templaterouter.ServiceAliasConfigKey
 }
 
 // RemoveRoute removes a route.
-func (cm *haproxyConfigManager) RemoveRoute(id templaterouter.ServiceAliasConfigKey, route *routev1.Route) error {
+func (cm *haproxyConfigManager) RemoveRoute(id templaterouter.ServiceAliasConfigKey, route *routev1.Route, endpoints []templaterouter.Endpoint) error {
 	log.V(4).Info("removing route", "id", id)
 	if cm.isReloading() {
 		return fmt.Errorf("Router reload in progress, cannot dynamically remove route id %s", id)
@@ -191,25 +191,17 @@ func (cm *haproxyConfigManager) RemoveRoute(id templaterouter.ServiceAliasConfig
 	delete(cm.backendEntries, id)
 
 	// Finally, disable all the servers.
-	log.V(4).Info("finding backend", "backend", backendName)
-	backend, err := cm.client.FindBackend(backendName)
-	if err != nil {
-		return err
-	}
+	backend := newBackendClient(cm.client, backendName)
 
 	log.V(4).Info("deleting all servers for backend", "backend", backendName)
-	servers, err := backend.Servers()
-	if err != nil {
-		return err
-	}
-	for _, server := range servers {
-		if _, err := backend.DeleteServer(&templaterouter.Endpoint{ID: server.Name}); err != nil {
-			return err
+	var errs []error
+	for _, ep := range endpoints {
+		if _, err := backend.DeleteServer(&ep); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	log.V(4).Info("committing changes made to backend", "backend", backendName)
-	return backend.Commit()
+	return errors.Join(errs...)
 }
 
 // ReplaceRouteEndpoints dynamically replaces a subset of the endpoints for
@@ -230,15 +222,11 @@ func (cm *haproxyConfigManager) ReplaceRouteEndpoints(id templaterouter.ServiceA
 	}
 
 	backendName := entry.BackendName()
-	log.V(4).Info("finding backend", "backend", backendName)
-	backend, err := cm.client.FindBackend(backendName)
-	if err != nil {
-		return err
-	}
+	backend := newBackendClient(cm.client, backendName)
 
 	type epPair struct{ oldEP, newEP *templaterouter.Endpoint }
-	addedEndpoints := make(map[string]*templaterouter.Endpoint)
-	modifiedEndpoints := make(map[string]epPair)
+	var addedEndpoints []*templaterouter.Endpoint
+	var modifiedEndpoints []epPair
 	for i := range newEndpoints {
 		newEP := newEndpoints[i]
 		j := slices.IndexFunc(oldEndpoints, func(oldEP templaterouter.Endpoint) bool {
@@ -247,21 +235,21 @@ func (cm *haproxyConfigManager) ReplaceRouteEndpoints(id templaterouter.ServiceA
 		if j >= 0 {
 			oldEP := oldEndpoints[j]
 			if !reflect.DeepEqual(oldEP, newEP) {
-				modifiedEndpoints[newEP.ID] = epPair{oldEP: &oldEP, newEP: &newEP}
+				modifiedEndpoints = append(modifiedEndpoints, epPair{oldEP: &oldEP, newEP: &newEP})
 			}
 		} else {
-			addedEndpoints[newEP.ID] = &newEP
+			addedEndpoints = append(addedEndpoints, &newEP)
 		}
 	}
 
-	deletedEndpoints := make(map[string]*templaterouter.Endpoint)
+	var deletedEndpoints []*templaterouter.Endpoint
 	for i := range oldEndpoints {
 		oldEP := oldEndpoints[i]
 		found := slices.ContainsFunc(newEndpoints, func(newEP templaterouter.Endpoint) bool {
 			return oldEP.ID == newEP.ID
 		})
 		if !found {
-			deletedEndpoints[oldEP.ID] = &oldEP
+			deletedEndpoints = append(deletedEndpoints, &oldEP)
 		}
 	}
 
@@ -270,24 +258,24 @@ func (cm *haproxyConfigManager) ReplaceRouteEndpoints(id templaterouter.ServiceA
 	// Aggregating errors instead of failing fast in the first API error. This ensures that the old
 	// process has a more accurate configuration in case it lives longer due to persistent connections.
 	var errs []error
-	for name, ep := range addedEndpoints {
+	for _, ep := range addedEndpoints {
 		if err := backend.AddServer(entry.backend, svc, ep, cm.workingDir, cm.defaultDestinationCA); err != nil {
-			errs = append(errs, fmt.Errorf("error adding backend server %s: %w", name, err))
+			errs = append(errs, fmt.Errorf("error adding backend server %s: %w", ep.ID, err))
 		}
 	}
 	var addedFromUpdate []*templaterouter.Endpoint
-	for name, epPair := range modifiedEndpoints {
+	for _, epPair := range modifiedEndpoints {
 		oldEP := epPair.oldEP
 		newEP := epPair.newEP
 		if added, err := backend.UpdateServer(entry.backend, svc, oldEP, newEP, entry.termination == routev1.TLSTerminationPassthrough, cm.workingDir, cm.defaultDestinationCA); err != nil {
-			errs = append(errs, fmt.Errorf("error updating backend server %s: %w", name, err))
+			errs = append(errs, fmt.Errorf("error updating backend server %s: %w", newEP.ID, err))
 		} else if added {
 			addedFromUpdate = append(addedFromUpdate, newEP)
 		}
 	}
-	for name, ep := range deletedEndpoints {
+	for _, ep := range deletedEndpoints {
 		if _, err := backend.DeleteServer(ep); err != nil {
-			errs = append(errs, fmt.Errorf("error deleting backend server %s: %w", name, err))
+			errs = append(errs, fmt.Errorf("error deleting backend server %s: %w", ep.ID, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -364,11 +352,7 @@ func (cm *haproxyConfigManager) RemoveRouteEndpoints(id templaterouter.ServiceAl
 	}
 
 	backendName := entry.BackendName()
-	log.V(4).Info("finding backend", "backend", backendName)
-	backend, err := cm.client.FindBackend(backendName)
-	if err != nil {
-		return err
-	}
+	backend := newBackendClient(cm.client, backendName)
 
 	var errs []error
 	for _, ep := range endpoints {

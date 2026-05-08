@@ -794,46 +794,6 @@ func (r *templateRouter) updateEndpointTable(cfg *ServiceAliasConfig) {
 	cfg.EndpointTable = endpointTable
 }
 
-// dynamicallyAddRoute attempts to dynamically add a route.
-// Note: The config should have been synced at least once initially and
-// the caller needs to acquire a lock [and release it].
-func (r *templateRouter) dynamicallyAddRoute(backendKey ServiceAliasConfigKey, route *routev1.Route, backend *ServiceAliasConfig) bool {
-	if r.dynamicConfigManager == nil {
-		return false
-	}
-
-	log.V(4).Info("dynamically adding route backend", "backendKey", backendKey)
-	r.dynamicConfigManager.Register(backendKey, backend, route)
-
-	// If no initial sync was done, don't try to dynamically add the
-	// route as we will need a reload anyway.
-	if !r.synced {
-		return false
-	}
-
-	err := r.dynamicConfigManager.AddRoute(backendKey, backend.RoutingKeyName, route)
-	if err != nil {
-		log.Info("router will reload as the ConfigManager could not dynamically add route for backend", "backendKey", backendKey, "error", err)
-		return false
-	}
-
-	activeEndpoints := r.getActiveEndpoints(backend.ServiceUnits, backend.PreferPort)
-	for key := range backend.ServiceUnits {
-		if service, ok := r.findMatchingServiceUnit(key); ok {
-			newEndpoints := backend.EndpointTable[key]
-			log.V(4).Info("for new route backend, replacing endpoints for service", "backendKey", backendKey, "serviceKey", key, "newEndpoints", newEndpoints)
-			if err := r.dynamicConfigManager.ReplaceRouteEndpoints(backendKey, &service, nil, newEndpoints, activeEndpoints); err != nil {
-				log.Info("router will reload as the ConfigManager could not dynamically replace endpoints for route backend",
-					"backendKey", backendKey, "serviceKey", key, "error", err)
-				return false
-			}
-		}
-	}
-
-	log.V(4).Info("dynamically added route backend", "backendKey", backendKey)
-	return true
-}
-
 func (r *templateRouter) dynamicallyUpdateRoute(backendKey ServiceAliasConfigKey, oldConfig, newConfig *ServiceAliasConfig) bool {
 	// We currently support changes on a few fields, checking if there are changes elsewhere.
 	newConfigCopy := *newConfig
@@ -1194,7 +1154,10 @@ func (r *templateRouter) AddRoute(route *routev1.Route) {
 	if exists {
 		configChanged = r.dynamicallyUpdateRoute(backendKey, &existingConfig, newConfig)
 	} else {
-		configChanged = r.dynamicallyAddRoute(backendKey, route, newConfig)
+		if r.dynamicConfigManager != nil {
+			r.dynamicConfigManager.Register(backendKey, newConfig, route)
+		}
+		configChanged = false
 	}
 
 	r.state[backendKey] = *newConfig

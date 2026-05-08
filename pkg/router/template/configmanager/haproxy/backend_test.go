@@ -473,10 +473,6 @@ type fakeClient struct {
 	respCount     int
 }
 
-func (c *fakeClient) RunCommand(cmd string, _ Converter) ([]byte, error) {
-	return c.Execute(cmd)
-}
-
 func (c *fakeClient) Execute(cmd string) ([]byte, error) {
 	c.executedCmds = append(c.executedCmds, cmd)
 
@@ -488,13 +484,4 @@ func (c *fakeClient) Execute(cmd string) ([]byte, error) {
 	response += "\n"
 
 	return []byte(response), nil
-}
-
-//
-// maps compatibility, remove along with https://redhat.atlassian.net/browse/NE-2644
-
-func (c *fakeClient) Maps() ([]*HAProxyMap, error) {
-	return nil, nil
-}
-func (c *fakeClient) Reset() {
 }

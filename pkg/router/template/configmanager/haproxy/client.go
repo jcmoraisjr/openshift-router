@@ -22,19 +22,13 @@ const (
 )
 
 type HAProxyClient interface {
-	RunCommand(cmd string, converter Converter) ([]byte, error)
 	Execute(cmd string) ([]byte, error)
-
-	// maps compatibility, remove along with https://redhat.atlassian.net/browse/NE-2644
-	Maps() ([]*HAProxyMap, error)
-	Reset()
 }
 
 // Client is a client used to dynamically configure haproxy.
 type Client struct {
 	socketAddress string
 	timeout       int
-	maps          map[string]*HAProxyMap
 }
 
 // NewClient returns a client used to dynamically change the haproxy config.
@@ -47,13 +41,11 @@ func NewClient(socketName string, timeout int) *Client {
 	return &Client{
 		socketAddress: sockAddr,
 		timeout:       timeout,
-		maps:          make(map[string]*HAProxyMap),
 	}
 }
 
-// RunCommand executes a haproxy dynamic config API command and if present
-// converts the response as desired.
-func (c *Client) RunCommand(cmd string, converter Converter) ([]byte, error) {
+// Execute runs a haproxy dynamic config API command.
+func (c *Client) Execute(cmd string) ([]byte, error) {
 	log.V(4).Info("running haproxy command", "command", cmd)
 	buffer, err := c.runCommandWithRetries(cmd, maxRetries)
 	if err != nil {
@@ -63,69 +55,7 @@ func (c *Client) RunCommand(cmd string, converter Converter) ([]byte, error) {
 
 	response := buffer.Bytes()
 	log.V(4).Info("haproxy command returned", "response", string(response))
-	if converter == nil {
-		return response, nil
-	}
-
-	return converter.Convert(response)
-}
-
-// Execute runs a haproxy dynamic config API command.
-func (c *Client) Execute(cmd string) ([]byte, error) {
-	return c.RunCommand(cmd, nil)
-}
-
-// Reset resets any changes and clears the backends and maps.
-func (c *Client) Reset() {
-	c.maps = make(map[string]*HAProxyMap)
-}
-
-// Commit flushes out any pending changes on all the maps.
-func (c *Client) Commit() error {
-	for _, m := range c.maps {
-		if err := m.Commit(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Maps returns the list of configured haproxy maps.
-func (c *Client) Maps() ([]*HAProxyMap, error) {
-	if len(c.maps) == 0 {
-		hapMaps, err := buildHAProxyMaps(c)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, v := range hapMaps {
-			c.maps[v.Name()] = v
-		}
-
-		return hapMaps, nil
-	}
-
-	mapList := make([]*HAProxyMap, len(c.maps))
-	i := 0
-	for _, v := range c.maps {
-		mapList[i] = v
-		i++
-	}
-
-	return mapList, nil
-}
-
-// FindMap returns a populated haproxy map.
-func (c *Client) FindMap(name string) (*HAProxyMap, error) {
-	if _, err := c.Maps(); err != nil {
-		return nil, err
-	}
-
-	if m, ok := c.maps[name]; ok {
-		return m, m.Refresh()
-	}
-
-	return nil, fmt.Errorf("no map found for name: %s", name)
+	return response, nil
 }
 
 // runCommandWithRetries retries a haproxy command upto the retry limit
@@ -151,7 +81,7 @@ func (c *Client) runCommandWithRetries(cmd string, limit int) (*bytes.Buffer, er
 		if cmdErr == nil {
 			return true, nil
 		}
-		if !isRetriable(cmdErr, cmd) {
+		if !isRetriable(cmdErr) {
 			return false, cmdErr
 		}
 		return false, nil
@@ -165,7 +95,7 @@ func (c *Client) runCommandWithRetries(cmd string, limit int) (*bytes.Buffer, er
 }
 
 // isRetriable checks if a haproxy command can be retried.
-func isRetriable(err error, cmd string) bool {
+func isRetriable(err error) bool {
 	retryableErrors := []string{
 		"connection reset by peer",
 		"connection refused",

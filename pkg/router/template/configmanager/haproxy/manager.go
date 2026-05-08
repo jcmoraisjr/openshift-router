@@ -3,8 +3,8 @@ package haproxy
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
-	"path"
 	"reflect"
 	"slices"
 	"sync"
@@ -55,7 +55,7 @@ type routeBackendEntry struct {
 	backendName templaterouter.ServiceAliasConfigKey
 
 	// mapAssociations is the associated set of haproxy maps and their
-	// config entries.
+	// config entries for a route.
 	mapAssociations haproxyMapAssociation
 }
 
@@ -101,6 +101,10 @@ type haproxyConfigManager struct {
 	// backendEntries is a map of route id to the route backend entry.
 	backendEntries map[templaterouter.ServiceAliasConfigKey]*routeBackendEntry
 
+	// mapAssociations is the associated set of haproxy maps and their
+	// config entries for all configured routes.
+	mapAssociations haproxyMapAssociation
+
 	// lock is a mutex used to prevent concurrent config changes.
 	lock sync.Mutex
 }
@@ -123,6 +127,7 @@ func NewHAProxyConfigManager(options templaterouter.ConfigManagerOptions) *hapro
 		client:           client,
 		reloadInProgress: false,
 		backendEntries:   make(map[templaterouter.ServiceAliasConfigKey]*routeBackendEntry),
+		mapAssociations:  make(haproxyMapAssociation),
 	}
 }
 
@@ -159,7 +164,7 @@ func (cm *haproxyConfigManager) Register(id templaterouter.ServiceAliasConfigKey
 	cm.lock.Lock()
 	defer cm.lock.Unlock()
 
-	entry.BuildMapAssociations(route)
+	cm.updateMapAssociations(entry, route, true)
 	cm.backendEntries[id] = entry
 }
 
@@ -182,9 +187,12 @@ func (cm *haproxyConfigManager) RemoveRoute(id templaterouter.ServiceAliasConfig
 	backendName := entry.BackendName()
 	log.V(4).Info("removing backend", "id", id, "backend", backendName)
 
+	var errs []error
+
 	// Remove the associated haproxy map entries.
-	if err := cm.removeMapAssociations(entry.mapAssociations); err != nil {
-		log.V(0).Info("continuing despite errors removing backend map associations", "backend", backendName, "error", err)
+	cm.updateMapAssociations(entry, route, false)
+	if err := cm.processMapAssociations(entry); err != nil {
+		errs = append(errs, fmt.Errorf("error removing map associations for id %s: %w", id, err))
 	}
 
 	// Delete entry for route id to backend info.
@@ -194,7 +202,6 @@ func (cm *haproxyConfigManager) RemoveRoute(id templaterouter.ServiceAliasConfig
 	backend := newBackendClient(cm.client, backendName)
 
 	log.V(4).Info("deleting all servers for backend", "backend", backendName)
-	var errs []error
 	for _, ep := range endpoints {
 		if _, err := backend.DeleteServer(&ep); err != nil {
 			errs = append(errs, err)
@@ -380,7 +387,6 @@ func (cm *haproxyConfigManager) Notify(event templaterouter.RouterEventType) {
 		cm.reloadInProgress = false
 	case templaterouter.RouterEventReloadEnd:
 		cm.reloadInProgress = false
-		cm.reset()
 	}
 }
 
@@ -392,43 +398,46 @@ func (cm *haproxyConfigManager) isReloading() bool {
 	return cm.reloadInProgress
 }
 
-// processMapAssociations processes all the map associations for a backend.
-func (cm *haproxyConfigManager) processMapAssociations(associations haproxyMapAssociation, add bool) error {
-	log.V(4).Info("processing map associations", "associations", associations)
+// processMapAssociations processes all the map associations for a backend entry.
+func (cm *haproxyConfigManager) processMapAssociations(entry *routeBackendEntry) error {
+	log.V(4).Info("processing map associations")
 
-	haproxyMaps, err := cm.client.Maps()
-	if err != nil {
-		return err
-	}
-
-	for _, ham := range haproxyMaps {
-		name := path.Base(ham.Name())
-		if entries, ok := associations[name]; ok {
-			log.V(4).Info("applying to map", "name", name, "entries", entries)
-			if err := ham.SyncEntries(entries, add); err != nil {
-				return err
-			}
+	// Iterating only over the maps whose entries were changed
+	var errs []error
+	for name := range entry.mapAssociations {
+		// Using the consolidated entries, which preserves routing data from other backends.
+		// Applying entries from the local cache, router is the one updating HAProxy and also the source of truth.
+		entries := cm.mapAssociations[name]
+		mapClient := newMapClient(cm.client, cm.workingDir, name)
+		if err := mapClient.SyncEntries(entries); err != nil {
+			errs = append(errs, err)
 		}
 	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
-// addMapAssociations adds all the map associations for a backend.
-func (cm *haproxyConfigManager) addMapAssociations(m haproxyMapAssociation) error {
-	return cm.processMapAssociations(m, true)
-}
-
-// removeMapAssociations removes all the map associations for a backend.
-func (cm *haproxyConfigManager) removeMapAssociations(m haproxyMapAssociation) error {
-	return cm.processMapAssociations(m, false)
-}
-
-// reset resets the haproxy dynamic configuration manager to a pristine
-// state. Clears out any allocated pool backends and dynamic servers.
-func (cm *haproxyConfigManager) reset() {
-	// Reset the client - clear its caches.
-	cm.client.Reset()
+func (cm *haproxyConfigManager) updateMapAssociations(entry *routeBackendEntry, route *routev1.Route, addEntries bool) {
+	log.V(4).Info("applying route entries to map cache", "namespace", route.Namespace, "name", route.Name, "adding", addEntries, "entries", entry.mapAssociations)
+	entry.buildMapAssociations(route)
+	for name, association := range entry.mapAssociations {
+		globalAssociation, found := cm.mapAssociations[name]
+		if !found {
+			globalAssociation = make(configEntryMap)
+		}
+		if addEntries {
+			maps.Copy(globalAssociation, association)
+		} else {
+			maps.DeleteFunc(globalAssociation, func(k string, _ templaterouter.ServiceAliasConfigKey) bool {
+				_, found := association[k]
+				return found
+			})
+		}
+		if len(globalAssociation) > 0 {
+			cm.mapAssociations[name] = globalAssociation
+		} else {
+			delete(cm.mapAssociations, name)
+		}
+	}
 }
 
 // BackendName returns the associated backend name for a route.
@@ -436,8 +445,8 @@ func (entry *routeBackendEntry) BackendName() templaterouter.ServiceAliasConfigK
 	return entry.backendName
 }
 
-// BuildMapAssociations builds the associations to haproxy maps for a route.
-func (entry *routeBackendEntry) BuildMapAssociations(route *routev1.Route) {
+// buildMapAssociations builds the associations to haproxy maps for a route.
+func (entry *routeBackendEntry) buildMapAssociations(route *routev1.Route) {
 	termination := routeTerminationType(route)
 	policy := routev1.InsecureEdgeTerminationPolicyNone
 	if route.Spec.TLS != nil {

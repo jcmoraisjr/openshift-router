@@ -398,7 +398,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 
 		AddFunc: func(obj interface{}) {
 			secret := obj.(*kapi.Secret)
-			log.V(2).Info("Secret added for route", "namespace", namespace, "secret", secret.Name, "route", routeName)
+			log.V(4).Info("Secret added for route", "namespace", namespace, "secret", secret.Name, "route", routeName)
 			routeapihelpers.InvalidateAsyncSARCache(namespace, secret.Name)
 
 			// Secret re-creation scenario
@@ -408,7 +408,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 			// This helps to differentiate between a new secret creation and a re-creation of a previously deleted secret.
 			key := generateKey(namespace, routeName)
 			if _, deleted := p.deletedSecrets.LoadAndDelete(key); deleted {
-				log.V(2).Info("Secret recreated for route", "namespace", namespace, "secret", secret.Name, "route", routeName)
+				log.V(4).Info("Secret recreated for route", "namespace", namespace, "secret", secret.Name, "route", routeName)
 
 				// Ensure fetching the updated route and DeepCopy to avoid
 				// reading/writing the shared informer cache object.
@@ -430,7 +430,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 			secretOld := old.(*kapi.Secret)
 			secretNew := new.(*kapi.Secret)
 			key := generateKey(namespace, routeName)
-			log.V(2).Info("Secret updated for route", "namespace", namespace, "secret", secretNew.Name, "oldSecretVersion", secretOld.ResourceVersion, "newSecretVersion", secretNew.ResourceVersion, "route", routeName)
+			log.V(4).Info("Secret updated for route", "namespace", namespace, "secret", secretNew.Name, "oldSecretVersion", secretOld.ResourceVersion, "newSecretVersion", secretNew.ResourceVersion, "route", routeName)
 			routeapihelpers.InvalidateAsyncSARCache(namespace, secretNew.Name)
 
 			// Ensure fetching the updated route and DeepCopy to avoid
@@ -476,7 +476,6 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 			// server → route informer → RouterController.HandleRoute →
 			// Commit), which adds 10-30s under HyperShift conditions.
 			p.plugin.Commit()
-			log.V(2).Info("Secret refresh completed for route", "namespace", namespace, "secret", secretNew.Name, "newSecretVersion", secretNew.ResourceVersion, "route", routeName)
 
 			// Schedule a delayed re-check to catch RBAC revocations that
 			// may not have propagated yet. The SAR cache was already
@@ -511,7 +510,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 			}
 			key := generateKey(namespace, routeName)
 			msg := fmt.Sprintf("external certificate validation failed: secret %q deleted for route %q", secret.Name, key)
-			log.V(2).Info(msg)
+			log.V(4).Info(msg)
 			routeapihelpers.InvalidateAsyncSARCache(namespace, secret.Name)
 
 			// keep the secret monitor active and mark the secret as deleted for this route.

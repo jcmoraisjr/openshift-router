@@ -49,6 +49,8 @@ const (
 	// '_' is not used as this could be part of the name in the future
 	// '/' is not safe to use in names of router config files
 	routeKeySeparator = ":"
+
+	certResourceVersionAnnotation = "router.openshift.io/cert-resource-version"
 )
 
 // templateRouter is a backend-agnostic router implementation
@@ -1105,7 +1107,7 @@ func (r *templateRouter) createServiceAliasConfig(route *routev1.Route, backendK
 		ActiveServiceUnits:    activeServiceUnits,
 		HTTPResponseHeaders:   httpResponseHeadersList,
 		HTTPRequestHeaders:    httpRequestHeadersList,
-		CertResourceVersion:   route.Annotations["router.openshift.io/cert-resource-version"],
+		CertResourceVersion:   route.Annotations[certResourceVersionAnnotation],
 	}
 
 	if route.Spec.Port != nil {
@@ -1597,6 +1599,8 @@ func configsAreEqual(config1, config2 *ServiceAliasConfig) bool {
 // incoming config was built from a stale secret read.  Both versions must
 // be non-empty (only set for externalCertificate routes) for the guard to
 // fire; routes without externalCertificate always return false.
+// Non-cert route changes (spec edits, label changes, etc.) never carry a
+// CertResourceVersion, so this guard cannot drop legitimate route updates.
 func isStaleExtCert(incoming, existing *ServiceAliasConfig) bool {
 	if incoming.CertResourceVersion == "" || existing.CertResourceVersion == "" {
 		return false

@@ -1143,8 +1143,8 @@ func TestRouteSecretManager(t *testing.T) {
 			if !reflect.DeepEqual(s.expectedUpdates, recorder.GetUpdates()) {
 				t.Fatalf("expected updates %v, but got %v", s.expectedUpdates, recorder.GetUpdates())
 			}
-			if _, exists := rsm.deletedSecrets.Load(generateKey(s.route.Namespace, s.route.Name)); exists {
-				t.Fatalf("expected deletedSecrets to not have %q key", generateKey(s.route.Namespace, s.route.Name))
+			if _, exists := rsm.deletedSecrets.Load(routeKey(s.route.Namespace, s.route.Name)); exists {
+				t.Fatalf("expected deletedSecrets to not have %q key", routeKey(s.route.Namespace, s.route.Name))
 			}
 		})
 	}
@@ -1573,8 +1573,8 @@ func TestSecretUpdate(t *testing.T) {
 				t.Fatalf("expected cert-resource-version annotation '200', got %q", v)
 			}
 
-			if _, exists := rsm.deletedSecrets.Load(generateKey(s.route.Namespace, s.route.Name)); exists {
-				t.Fatalf("expected deletedSecrets to not have %q key", generateKey(s.route.Namespace, s.route.Name))
+			if _, exists := rsm.deletedSecrets.Load(routeKey(s.route.Namespace, s.route.Name)); exists {
+				t.Fatalf("expected deletedSecrets to not have %q key", routeKey(s.route.Namespace, s.route.Name))
 			}
 
 		})
@@ -1805,7 +1805,7 @@ func TestSecretDelete(t *testing.T) {
 		t.Fatalf("expected rejections %v, but got %v", expectedRejections, recorder.GetRejections())
 	}
 
-	if val, _ := rsm.deletedSecrets.Load(generateKey(route.Namespace, route.Name)); !reflect.DeepEqual(val, expectedDeletedSecrets) {
+	if val, _ := rsm.deletedSecrets.Load(routeKey(route.Namespace, route.Name)); !reflect.DeepEqual(val, expectedDeletedSecrets) {
 		t.Fatalf("expected deletedSecrets %v, but got %v", expectedDeletedSecrets, val)
 	}
 }
@@ -1847,8 +1847,8 @@ func TestSecretRecreation(t *testing.T) {
 	if !reflect.DeepEqual(expectedRejections, recorder.GetRejections()) {
 		t.Fatalf("expected rejections %v, but got %v", expectedRejections, recorder.GetRejections())
 	}
-	if _, exists := rsm.deletedSecrets.Load(generateKey(route.Namespace, route.Name)); exists {
-		t.Fatalf("expected deletedSecrets to not have %q key", generateKey(route.Namespace, route.Name))
+	if _, exists := rsm.deletedSecrets.Load(routeKey(route.Namespace, route.Name)); exists {
+		t.Fatalf("expected deletedSecrets to not have %q key", routeKey(route.Namespace, route.Name))
 	}
 }
 
@@ -1873,7 +1873,7 @@ func TestLockRouteSerializesSameKey(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			unlock := rsm.lockRoute("sandbox/route-test")
+			unlock := rsm.lockRoute(routeKey("sandbox", "route-test"))
 			defer unlock()
 
 			n := atomic.AddInt32(&active, 1)
@@ -1906,7 +1906,7 @@ func TestLockRouteDoesNotSerializeDifferentKeys(t *testing.T) {
 	holding := make(chan struct{})
 
 	go func() {
-		unlock := rsm.lockRoute("sandbox/route-a")
+		unlock := rsm.lockRoute(routeKey("sandbox", "route-a"))
 		defer unlock()
 		close(holding)
 		<-release
@@ -1916,7 +1916,7 @@ func TestLockRouteDoesNotSerializeDifferentKeys(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		unlock := rsm.lockRoute("sandbox/route-b")
+		unlock := rsm.lockRoute(routeKey("sandbox", "route-b"))
 		unlock()
 		close(done)
 	}()

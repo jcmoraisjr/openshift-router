@@ -13,6 +13,7 @@ import (
 	"github.com/openshift/router/pkg/router"
 	"github.com/openshift/router/pkg/router/routeapihelpers"
 	kapi "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/watch"
@@ -91,12 +92,12 @@ type RouteSecretManager struct {
 	// over its lifetime to make this map's size a real concern is not a
 	// realistic scenario, so unbounded (but tiny, one *sync.Mutex per name)
 	// growth is the safer tradeoff over a subtly-reintroduced race.
-	routeLocks sync.Map // map[string]*sync.Mutex
+	routeLocks sync.Map // map[types.NamespacedName]*sync.Mutex
 }
 
 // lockRoute acquires the per-route lock for key, creating it on first use,
 // and returns a function to release it.
-func (p *RouteSecretManager) lockRoute(key string) func() {
+func (p *RouteSecretManager) lockRoute(key types.NamespacedName) func() {
 	value, _ := p.routeLocks.LoadOrStore(key, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
@@ -252,7 +253,7 @@ func (p *RouteSecretManager) HandleRoute(eventType watch.EventType, route *route
 				// UpdateFunc) from here through the propagation call below,
 				// so the two can never race to write different cert content
 				// to the plugin chain (see the routeLocks field comment).
-				unlock := p.lockRoute(generateKey(route.Namespace, route.Name))
+				unlock := p.lockRoute(routeKey(route.Namespace, route.Name))
 				defer unlock()
 
 				// read referenced secret and update TLS certificate and key
@@ -311,7 +312,7 @@ func (p *RouteSecretManager) HandleRoute(eventType watch.EventType, route *route
 	// silently overwriting DeleteFunc's rejection. Checking deletedSecrets
 	// here closes that race regardless of which goroutine finishes last.
 	if err == nil && registered {
-		key := generateKey(route.Namespace, route.Name)
+		key := routeKey(route.Namespace, route.Name)
 		if _, secretDeleted := p.deletedSecrets.Load(key); !secretDeleted {
 			msg := fmt.Sprintf("SAR check and secret load completed for secret %q", route.Spec.TLS.ExternalCertificate.Name)
 			p.recorder.RecordRouteUpdate(route, ExtCrtStatusReasonSARCompleted, msg)
@@ -349,7 +350,7 @@ func (p *RouteSecretManager) validateAndRegister(route *routev1.Route) (unlock f
 		return nil, err
 	}
 
-	unlock = p.lockRoute(generateKey(route.Namespace, route.Name))
+	unlock = p.lockRoute(routeKey(route.Namespace, route.Name))
 
 	// read referenced secret and update TLS certificate and key
 	if err := p.populateRouteTLSFromSecret(route); err != nil {
@@ -406,7 +407,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 			// If it exists, it means the secret is being recreated. Remove the key from the map and proceed with handling the route.
 			// Otherwise, no-op (new secret creation scenario and no race condition with that flow)
 			// This helps to differentiate between a new secret creation and a re-creation of a previously deleted secret.
-			key := generateKey(namespace, routeName)
+			key := routeKey(namespace, routeName)
 			if _, deleted := p.deletedSecrets.LoadAndDelete(key); deleted {
 				log.V(4).Info("Secret recreated for route", "namespace", namespace, "secret", secret.Name, "route", routeName)
 
@@ -429,7 +430,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 		UpdateFunc: func(old interface{}, new interface{}) {
 			secretOld := old.(*kapi.Secret)
 			secretNew := new.(*kapi.Secret)
-			key := generateKey(namespace, routeName)
+			key := routeKey(namespace, routeName)
 			log.V(4).Info("Secret updated for route", "namespace", namespace, "secret", secretNew.Name, "oldSecretVersion", secretOld.ResourceVersion, "newSecretVersion", secretNew.ResourceVersion, "route", routeName)
 			routeapihelpers.InvalidateAsyncSARCache(namespace, secretNew.Name)
 
@@ -508,7 +509,7 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 					return
 				}
 			}
-			key := generateKey(namespace, routeName)
+			key := routeKey(namespace, routeName)
 			msg := fmt.Sprintf("external certificate validation failed: secret %q deleted for route %q", secret.Name, key)
 			log.V(4).Info(msg)
 			routeapihelpers.InvalidateAsyncSARCache(namespace, secret.Name)
@@ -596,7 +597,7 @@ func (p *RouteSecretManager) unregister(route *routev1.Route) error {
 	}
 	// clean the route if present inside deletedSecrets
 	// this is required for the scenario when the associated secret is deleted, before unregistering with secretManager
-	p.deletedSecrets.Delete(generateKey(route.Namespace, route.Name))
+	p.deletedSecrets.Delete(routeKey(route.Namespace, route.Name))
 	return nil
 }
 
@@ -606,24 +607,7 @@ func hasExternalCertificate(route *routev1.Route) bool {
 	return tls != nil && tls.ExternalCertificate != nil && len(tls.ExternalCertificate.Name) > 0
 }
 
-// generateKey creates a unique identifier for a route
-func generateKey(namespace, routeName string) string {
-	return fmt.Sprintf("%s/%s", namespace, routeName)
+func routeKey(namespace, routeName string) types.NamespacedName {
+	return types.NamespacedName{Namespace: namespace, Name: routeName}
 }
 
-// isRouteAdmittedTrue returns true if the given route has been admitted
-// by the current router, otherwise false.
-func isRouteAdmittedTrue(route *routev1.Route, routerName string) bool {
-	for _, ingress := range route.Status.Ingress {
-		if ingress.RouterName != routerName {
-			continue
-		}
-
-		for _, condition := range ingress.Conditions {
-			if condition.Type == routev1.RouteAdmitted && condition.Status == kapi.ConditionTrue {
-				return true
-			}
-		}
-	}
-	return false
-}

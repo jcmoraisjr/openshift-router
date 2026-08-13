@@ -1524,7 +1524,7 @@ func TestAddRouteStalenessGuard(t *testing.T) {
 			Namespace: "ns",
 			Name:      "extcert-route",
 			Annotations: map[string]string{
-				"router.openshift.io/cert-resource-version": "100",
+				certResourceVersionAnnotation: "100",
 			},
 		},
 		Spec: routev1.RouteSpec{
@@ -1550,7 +1550,7 @@ func TestAddRouteStalenessGuard(t *testing.T) {
 
 	// Update with a newer version — should be accepted.
 	routeV200 := route.DeepCopy()
-	routeV200.Annotations["router.openshift.io/cert-resource-version"] = "200"
+	routeV200.Annotations[certResourceVersionAnnotation] = "200"
 	routeV200.Spec.TLS.Certificate = "cert-v200"
 	routeV200.Spec.TLS.Key = "key-v200"
 	router.AddRoute(routeV200)
@@ -1562,7 +1562,7 @@ func TestAddRouteStalenessGuard(t *testing.T) {
 
 	// Update with an older version — should be silently dropped.
 	routeV150 := route.DeepCopy()
-	routeV150.Annotations["router.openshift.io/cert-resource-version"] = "150"
+	routeV150.Annotations[certResourceVersionAnnotation] = "150"
 	routeV150.Spec.TLS.Certificate = "cert-v150"
 	routeV150.Spec.TLS.Key = "key-v150"
 	router.AddRoute(routeV150)
@@ -1574,7 +1574,7 @@ func TestAddRouteStalenessGuard(t *testing.T) {
 
 	// Update with the same version — should be dropped (<=).
 	routeV200Again := route.DeepCopy()
-	routeV200Again.Annotations["router.openshift.io/cert-resource-version"] = "200"
+	routeV200Again.Annotations[certResourceVersionAnnotation] = "200"
 	routeV200Again.Spec.TLS.Certificate = "cert-v200-again"
 	routeV200Again.Spec.TLS.Key = "key-v200-again"
 	router.AddRoute(routeV200Again)

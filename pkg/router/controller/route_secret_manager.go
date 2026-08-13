@@ -462,15 +462,16 @@ func (p *RouteSecretManager) generateSecretHandler(namespace, routeName string) 
 			// makes 4 blocking API calls, creating N×4 sequential
 			// round-trips that can exceed the test's poll timeout under
 			// API-server load (e.g. HyperShift CI).
-			unlock := p.lockRoute(key)
-			if err := p.populateRouteTLSFromSecret(route); err != nil {
-				unlock()
-				return
-			}
-			if err := p.plugin.HandleRoute(watch.Modified, route); err != nil {
-				log.Error(err, "failed to propagate route after secret update", "namespace", namespace, "route", routeName)
-			}
-			unlock()
+			func() {
+				unlock := p.lockRoute(key)
+				defer unlock()
+				if err := p.populateRouteTLSFromSecret(route); err != nil {
+					return
+				}
+				if err := p.plugin.HandleRoute(watch.Modified, route); err != nil {
+					log.Error(err, "failed to propagate route after secret update", "namespace", namespace, "route", routeName)
+				}
+			}()
 
 			// Trigger a rate-limited HAProxy reload directly instead of
 			// depending on the indirect round trip (status write → API
@@ -610,4 +611,3 @@ func hasExternalCertificate(route *routev1.Route) bool {
 func routeKey(namespace, routeName string) types.NamespacedName {
 	return types.NamespacedName{Namespace: namespace, Name: routeName}
 }
-
